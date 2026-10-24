@@ -1,60 +1,71 @@
 package main
 
 import (
+	"bytes"
+	"crypto/md5"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"html/template"
-	"log"
-	"net/http"
-	"strings"
-	"time"
-	"crypto/md5"
-	"strconv"
-	"os"
-	"bytes"
 	"io"
 	"io/ioutil"
+	"log"
 	"mime/multipart"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
 )
 
 func sayhelloName(w http.ResponseWriter, r *http.Request) {
-	r.ParseForm()
-	fmt.Println(r.Form)
-	fmt.Println("path", r.URL.Path)
-	fmt.Println("scheme", r.URL.Scheme)
-	fmt.Println(r.Form["url_long"])
-	for k, v := range r.Form {
-		fmt.Println("key:", k)
-		fmt.Println("val:", strings.Join(v, ""))
-	}
-	fmt.Fprintf(w, "Hello astaxie!")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = io.WriteString(w, "Hello astaxie!\n")
 }
 
-func login( w http.ResponseWriter, r *http.Request) {
-	if r.Method == "GET" {
-		crutime := time.Now().Unix()
-		h := md5.New()
-		io.WriteString(h, strconv.FormatInt(crutime, 10))
-		token := fmt.Sprintf("%x", h.Sum(nil))
-
-		t, _ := template.ParseFiles("login.html")
-		t.Execute(w, token)
-	} else {
-		r.ParseForm()
-		token := r.Form.Get("token")
-		if token != "" {
-			//	tokenの合法性を検証します。
-		} else {
-			//	tokenが存在しなければエラーを出します。
+func login(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		var tokenBytes [32]byte
+		if _, err := rand.Read(tokenBytes[:]); err != nil {
+			http.Error(w, "could not prepare login form", http.StatusInternalServerError)
+			return
 		}
-		fmt.Println("username length:", len(r.Form["username"][0]))
-		fmt.Println("username:", template.HTMLEscapeString(r.Form.Get("username")))
-		fmt.Println("password:", template.HTMLEscapeString(r.Form.Get("password")))
-		template.HTMLEscape(w, []byte(r.Form.Get("username")))
+		token := base64.RawURLEncoding.EncodeToString(tokenBytes[:])
+		http.SetCookie(w, &http.Cookie{Name: "csrf", Value: token, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: 300})
+		w.Header().Set("Cache-Control", "no-store")
+		t, err := template.ParseFiles("login.html")
+		if err != nil {
+			http.Error(w, "login form unavailable", http.StatusInternalServerError)
+			return
+		}
+		if err := t.Execute(w, token); err != nil {
+			log.Printf("render login form: %v", err)
+		}
+		return
 	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid login request", http.StatusBadRequest)
+		return
+	}
+	cookie, err := r.Cookie("csrf")
+	if err != nil || subtle.ConstantTimeCompare([]byte(r.Form.Get("token")), []byte(cookie.Value)) != 1 {
+		http.Error(w, "invalid login request", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNotImplemented)
+	_, _ = io.WriteString(w, "Authentication is not implemented in this sample.\n")
 }
 
 func upload(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("method:", r.Method)	//	リクエストを受け取るメソッド
+	fmt.Println("method:", r.Method) //	リクエストを受け取るメソッド
 	if r.Method == "GET" {
 		crutime := time.Now().Unix()
 		h := md5.New()
@@ -89,7 +100,7 @@ func postFile(filename string, targetUrl string) error {
 	fileWriter, err := bodyWriter.CreateFormFile("uploadfile", filename)
 	if err != nil {
 		fmt.Println("error writing to buffer")
-		return err 
+		return err
 	}
 
 	//	ファイルハンドル操作をオープンする
@@ -103,7 +114,7 @@ func postFile(filename string, targetUrl string) error {
 	//	iocopy
 	_, err = io.Copy(fileWriter, fh)
 	if err != nil {
-		return err 
+		return err
 	}
 
 	contentType := bodyWriter.FormDataContentType()
@@ -111,17 +122,17 @@ func postFile(filename string, targetUrl string) error {
 
 	resp, err := http.Post(targetUrl, contentType, bodyBuf)
 	if err != nil {
-		return err 
+		return err
 	}
 	defer resp.Body.Close()
 	resp_body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return err 
+		return err
 	}
 
 	fmt.Println(resp.Status)
 	fmt.Println(string(resp_body))
-	return nil 
+	return nil
 }
 
 func client(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +149,7 @@ func main() {
 	http.HandleFunc("/login", login)
 	http.HandleFunc("/upload", upload)
 	http.HandleFunc("/test", client)
-	
+
 	err := http.ListenAndServe(":3000", nil)
 	if err != nil {
 		log.Fatal("ListenAndServe:", err)
